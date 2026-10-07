@@ -5,9 +5,10 @@ import { OrbitControls } from "@tresjs/cientos";
 import { storeToRefs } from "pinia";
 import CameraRig from "./CameraRig.vue";
 import { useConfiguratorStore } from "../stores/configurator";
+import { optionOf } from "../stores/pricing";
 
 const store = useConfiguratorStore();
-const { configuration, cameraPreset } = storeToRefs(store);
+const { viewConfiguration: configuration, cameraPreset, activePoint } = storeToRefs(store);
 
 const palette: Record<string, string> = {
   graphite: "#343941",
@@ -33,6 +34,8 @@ const accentColor = computed(() => {
   return "#79a3c5";
 });
 const isLongBody = computed(() => configuration.value.stand === "floor");
+const colorName = computed(() => optionOf("color", configuration.value.color).name);
+const materialName = computed(() => optionOf("material", configuration.value.material).name);
 </script>
 
 <template>
@@ -127,7 +130,10 @@ const isLongBody = computed(() => configuration.value.stand === "floor");
 
     <div class="pointer-events-none absolute left-4 top-4 rounded-xl border border-white/70 bg-white/80 px-3 py-2 shadow-sm backdrop-blur">
       <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">AeroStation S4</p>
-      <p class="mt-1 text-sm font-black text-slate-800">{{ store.options.color.name }} · {{ store.options.material.name }}</p>
+      <p class="mt-1 text-sm font-black text-slate-800">{{ colorName }} · {{ materialName }}</p>
+      <p v-if="activePoint" class="mt-0.5 text-[11px] font-bold text-blue-600">
+        {{ activePoint.point.name }} · {{ activePoint.point.quantity }} 台
+      </p>
     </div>
     <div class="pointer-events-none absolute bottom-4 left-4 flex items-center gap-2 rounded-full bg-slate-900/80 px-3 py-2 text-[11px] text-white backdrop-blur">
       <span class="h-2 w-2 rounded-full bg-emerald-400" /> 拖拽旋转 · 滚轮缩放
