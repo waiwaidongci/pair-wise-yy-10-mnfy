@@ -4,7 +4,7 @@ import { useConfiguratorStore } from "../stores/configurator";
 import type { CameraPreset } from "../types/product";
 
 const store = useConfiguratorStore();
-const { specs, cameraPreset } = storeToRefs(store);
+const { activeSpecs, activePoint, cameraPreset } = storeToRefs(store);
 const presets: Array<{ id: CameraPreset; label: string }> = [
   { id: "hero", label: "主视角" },
   { id: "front", label: "正视图" },
@@ -28,10 +28,13 @@ const presets: Array<{ id: CameraPreset; label: string }> = [
       </button>
     </div>
 
-    <div class="grid flex-1 grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 xl:grid-cols-6">
-      <div v-for="spec in specs" :key="spec.label" class="min-w-[100px]">
-        <p class="text-[9px] uppercase tracking-wider text-slate-400">{{ spec.label }}</p>
-        <p class="mt-0.5 text-xs font-black text-slate-800">{{ spec.value }}</p>
+    <div class="flex items-center gap-2">
+      <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">{{ activePoint.name }}</span>
+      <div class="grid flex-1 grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 xl:grid-cols-6">
+        <div v-for="spec in activeSpecs" :key="spec.label" class="min-w-[100px]">
+          <p class="text-[9px] uppercase tracking-wider text-slate-400">{{ spec.label }}</p>
+          <p class="mt-0.5 text-xs font-black text-slate-800">{{ spec.value }}</p>
+        </div>
       </div>
     </div>
   </div>

@@ -1,6 +1,6 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
-import type { CameraPreset, Configuration, ProductGroup, ProductSpec } from "../types/product";
+import type { CameraPreset, OrderConfiguration, PointConfiguration, ProductGroup, ProductSpec } from "../types/product";
 
 export const productGroups: ProductGroup[] = [
   {
@@ -29,9 +29,9 @@ export const productGroups: ProductGroup[] = [
     name: "滤芯系统",
     summary: "根据房间面积和敏感人群选择",
     options: [
-      { id: "standard", name: "标准复合滤芯", description: "适合 25-45㎡ 空间", price: 0 },
-      { id: "hepa", name: "H13 医疗级滤芯", description: "高效过滤细颗粒物", price: 860 },
-      { id: "formaldehyde", name: "除醛增强滤芯", description: "新装修空间推荐", price: 720 },
+      { id: "standard", name: "标准复合滤芯", description: "适合 25-45㎡ 空间", price: 0, coverageMax: 45 },
+      { id: "hepa", name: "H13 医疗级滤芯", description: "高效过滤细颗粒物", price: 860, coverageMax: 65 },
+      { id: "formaldehyde", name: "除醛增强滤芯", description: "新装修空间推荐", price: 720, coverageMax: 55 },
     ],
   },
   {
@@ -65,114 +65,300 @@ export const productGroups: ProductGroup[] = [
   },
 ];
 
-const defaultConfiguration: Configuration = {
-  color: "graphite",
-  material: "matte",
-  filter: "standard",
-  battery: "standard",
-  stand: "desktop",
-  trim: "subtle",
+/** 整单统一的选项组（颜色、材质、续航、控制环） */
+export type OrderGroupId = "color" | "material" | "battery" | "trim";
+/** 按点位各选的选项组（滤芯、支架） */
+export type PointGroupId = "filter" | "stand";
+
+export const orderGroups = productGroups.filter(
+  (group) => group.id !== "filter" && group.id !== "stand",
+) as Array<ProductGroup & { id: OrderGroupId }>;
+export const pointGroups = productGroups.filter(
+  (group) => group.id === "filter" || group.id === "stand",
+) as Array<ProductGroup & { id: PointGroupId }>;
+
+const basePrice = 3299;
+
+/** 各滤芯单台最大覆盖面积（㎡） */
+const filterCoverage: Record<string, number> = {
+  standard: 45,
+  hepa: 65,
+  formaldehyde: 55,
 };
 
+const batteryCopy: Record<string, string> = {
+  none: "电源供电",
+  standard: "5 小时",
+  extended: "11 小时",
+};
+
+const coverageCopy: Record<string, string> = {
+  standard: "25-45㎡",
+  hepa: "35-65㎡",
+  formaldehyde: "30-55㎡",
+};
+
+function findOption(groupId: ProductGroup["id"], optionId: string) {
+  return productGroups.find((group) => group.id === groupId)?.options.find((option) => option.id === optionId);
+}
+
+function isValidOption(groupId: ProductGroup["id"], id: unknown): id is string {
+  return typeof id === "string" && !!findOption(groupId, id);
+}
+
+let pointSeq = 0;
+function defaultPoint(index: number): PointConfiguration {
+  pointSeq += 1;
+  return {
+    id: `p-${Date.now().toString(36)}-${pointSeq}`,
+    name: `点位 ${index + 1}`,
+    area: 30,
+    units: 1,
+    filter: "standard",
+    stand: "desktop",
+  };
+}
+
+function createDefaultOrder(): OrderConfiguration {
+  return {
+    color: "graphite",
+    material: "matte",
+    battery: "standard",
+    trim: "subtle",
+    points: [defaultPoint(0)],
+  };
+}
+
+function sanitizePoint(input: Partial<PointConfiguration>, index: number): PointConfiguration {
+  const fallback = defaultPoint(index);
+  return {
+    id: typeof input.id === "string" && input.id ? input.id : fallback.id,
+    name: typeof input.name === "string" && input.name.trim() ? input.name.trim() : fallback.name,
+    area: typeof input.area === "number" && input.area > 0 ? Math.round(input.area) : fallback.area,
+    units: typeof input.units === "number" && input.units > 0 ? Math.round(input.units) : fallback.units,
+    filter: isValidOption("filter", input.filter) ? input.filter : fallback.filter,
+    stand: isValidOption("stand", input.stand) ? input.stand : fallback.stand,
+  };
+}
+
+function sanitizeOrder(input: Partial<OrderConfiguration>): OrderConfiguration {
+  const fallback = createDefaultOrder();
+  const order: OrderConfiguration = {
+    color: isValidOption("color", input.color) ? input.color : fallback.color,
+    material: isValidOption("material", input.material) ? input.material : fallback.material,
+    battery: isValidOption("battery", input.battery) ? input.battery : fallback.battery,
+    trim: isValidOption("trim", input.trim) ? input.trim : fallback.trim,
+    points:
+      Array.isArray(input.points) && input.points.length > 0
+        ? input.points.map((point, index) => sanitizePoint(point, index))
+        : fallback.points.map((point, index) => sanitizePoint(point, index)),
+  };
+  // 兼容性修正：材质决定结构，连带修正续航、支架与滤芯
+  if (order.material !== "metal" && order.battery === "extended") order.battery = "standard";
+  for (const point of order.points) {
+    if (order.material !== "metal" && point.stand === "floor") point.stand = "desktop";
+    if (order.material === "wood" && point.filter === "hepa") point.filter = "standard";
+  }
+  return order;
+}
+
 export const useConfiguratorStore = defineStore("configurator", () => {
-  const configuration = ref<Configuration>({ ...defaultConfiguration });
+  const order = ref<OrderConfiguration>(createDefaultOrder());
+  const activePointId = ref<string>(order.value.points[0].id);
   const cameraPreset = ref<CameraPreset>("hero");
   const modelRotation = ref(-0.35);
   const shareNotice = ref("");
 
-  const options = computed(() =>
-    Object.fromEntries(
-      productGroups.map((group) => [group.id, group.options.find((option) => option.id === configuration.value[group.id])!]),
-    ) as Record<ProductGroup["id"], ProductGroup["options"][number]>,
+  const activePoint = computed(
+    () => order.value.points.find((point) => point.id === activePointId.value) ?? order.value.points[0],
   );
 
+  /** 整单统一选项的当前选项对象 */
+  const orderOptions = computed(() =>
+    Object.fromEntries(
+      orderGroups.map((group) => [group.id, findOption(group.id, order.value[group.id as keyof OrderConfiguration] as string)!]),
+    ) as Record<(typeof orderGroups)[number]["id"], ProductGroup["options"][number]>,
+  );
+
+  /** 风量超出覆盖能力的点位（面积 > 台数 × 单台覆盖） */
+  const overCapacityPoints = computed(() =>
+    order.value.points.filter((point) => point.area > point.units * (filterCoverage[point.filter] ?? 45)),
+  );
+
+  const isAtCapacity = computed(() => overCapacityPoints.value.length > 0);
+
   const dependencyMessage = computed(() => {
-    if (configuration.value.battery === "extended" && configuration.value.material !== "metal") {
+    if (order.value.battery === "extended" && order.value.material !== "metal") {
       return "长续航双电池需要搭配拉丝铝合金机身。";
     }
-    if (configuration.value.stand === "floor" && configuration.value.material !== "metal") {
+    if (order.value.points.some((point) => point.stand === "floor") && order.value.material !== "metal") {
       return "立式支架需要铝合金机身提供结构强度。";
     }
-    if (configuration.value.material === "wood" && configuration.value.filter === "hepa") {
+    if (order.value.points.some((point) => point.filter === "hepa") && order.value.material === "wood") {
       return "医疗级滤芯不支持天然胡桃木饰面。";
     }
     return "";
   });
 
-  const price = computed(() => {
-    const total = 3299 + Object.values(options.value).reduce((sum, option) => sum + option.price, 0);
-    return total;
-  });
-
-  const specs = computed<ProductSpec[]>(() => {
-    const batteryCopy: Record<Configuration["battery"], string> = {
-      none: "电源供电",
-      standard: "5 小时",
-      extended: "11 小时",
-    };
-    const coverage: Record<Configuration["filter"], string> = {
-      standard: "25-45㎡",
-      hepa: "35-65㎡",
-      formaldehyde: "30-55㎡",
-    };
-    return [
-      { label: "建议面积", value: coverage[configuration.value.filter] },
-      { label: "颗粒物 CADR", value: configuration.value.filter === "hepa" ? "620m³/h" : "480m³/h" },
-      { label: "运行噪声", value: configuration.value.material === "metal" ? "20-48 dB" : "22-51 dB" },
-      { label: "续航", value: batteryCopy[configuration.value.battery] },
-      { label: "机身重量", value: configuration.value.material === "metal" ? "8.6kg" : "6.9kg" },
-      { label: "控制方式", value: configuration.value.trim === "subtle" ? "触控 + App" : "旋钮 + App" },
-    ];
-  });
-
-  const isOptionDisabled = (groupId: ProductGroup["id"], optionId: string) => {
-    if (groupId === "battery" && optionId === "extended" && configuration.value.material !== "metal") return true;
-    if (groupId === "stand" && optionId === "floor" && configuration.value.material !== "metal") return true;
-    if (groupId === "filter" && optionId === "hepa" && configuration.value.material === "wood") return true;
+  function isOptionDisabled(groupId: ProductGroup["id"], optionId: string) {
+    if (groupId === "battery" && optionId === "extended" && order.value.material !== "metal") return true;
+    if (groupId === "stand" && optionId === "floor" && order.value.material !== "metal") return true;
+    if (groupId === "filter" && optionId === "hepa" && order.value.material === "wood") return true;
     return false;
-  };
+  }
 
-  function selectOption(groupId: ProductGroup["id"], optionId: string) {
+  /** 单台价格：基础主机 + 整单选项 + 该点位选项 */
+  function unitPriceOf(point: PointConfiguration): number {
+    const optionIds = [order.value.color, order.value.material, order.value.battery, order.value.trim, point.filter, point.stand];
+    let surcharge = 0;
+    for (const group of productGroups) {
+      for (const option of group.options) {
+        if (optionIds.includes(option.id)) surcharge += option.price;
+      }
+    }
+    return basePrice + surcharge;
+  }
+
+  /** 点位报价：台数 × 单台价格 */
+  function pointPrice(point: PointConfiguration): number {
+    return point.units * unitPriceOf(point);
+  }
+
+  /** 点位总覆盖面积：台数 × 单台覆盖 */
+  function pointCoverage(point: PointConfiguration): number {
+    return point.units * (filterCoverage[point.filter] ?? 45);
+  }
+
+  function isPointOverCapacity(point: PointConfiguration): boolean {
+    return point.area > pointCoverage(point);
+  }
+
+  /** 点位规格（随整单材质/续航/控制环与点位滤芯重算） */
+  function pointSpecs(point: PointConfiguration): ProductSpec[] {
+    return [
+      { label: "建议面积", value: `${coverageCopy[point.filter] ?? "25-45㎡"}/台` },
+      { label: "颗粒物 CADR", value: point.filter === "hepa" ? "620m³/h" : "480m³/h" },
+      { label: "运行噪声", value: order.value.material === "metal" ? "20-48 dB" : "22-51 dB" },
+      { label: "续航", value: batteryCopy[order.value.battery] ?? "5 小时" },
+      { label: "机身重量", value: order.value.material === "metal" ? "8.6kg" : "6.9kg" },
+      { label: "控制方式", value: order.value.trim === "subtle" ? "触控 + App" : "旋钮 + App" },
+    ];
+  }
+
+  const activeSpecs = computed(() => pointSpecs(activePoint.value));
+
+  const totalPrice = computed(() => order.value.points.reduce((sum, point) => sum + pointPrice(point), 0));
+
+  function selectOrderOption(groupId: "color" | "material" | "battery" | "trim", optionId: string) {
     if (isOptionDisabled(groupId, optionId)) {
       shareNotice.value = dependencyMessage.value || "当前组合不支持该选项。";
       return;
     }
-    configuration.value[groupId] = optionId;
-    if (groupId === "material" && optionId !== "metal") {
-      if (configuration.value.battery === "extended") configuration.value.battery = "standard";
-      if (configuration.value.stand === "floor") configuration.value.stand = "desktop";
-    }
-    if (groupId === "material" && optionId === "wood" && configuration.value.filter === "hepa") {
-      configuration.value.filter = "standard";
+    order.value[groupId] = optionId;
+    if (groupId === "material") {
+      if (optionId !== "metal") {
+        if (order.value.battery === "extended") order.value.battery = "standard";
+        for (const point of order.value.points) {
+          if (point.stand === "floor") point.stand = "desktop";
+        }
+      }
+      if (optionId === "wood") {
+        for (const point of order.value.points) {
+          if (point.filter === "hepa") point.filter = "standard";
+        }
+      }
     }
     shareNotice.value = "";
   }
 
-  function applyConfiguration(next: Partial<Configuration>) {
-    const safe = { ...defaultConfiguration, ...next };
-    if (safe.material !== "metal" && safe.battery === "extended") safe.battery = "standard";
-    if (safe.material !== "metal" && safe.stand === "floor") safe.stand = "desktop";
-    if (safe.material === "wood" && safe.filter === "hepa") safe.filter = "standard";
-    configuration.value = safe;
+  function selectPointOption(pointId: string, groupId: "filter" | "stand", optionId: string) {
+    if (isOptionDisabled(groupId, optionId)) {
+      shareNotice.value = dependencyMessage.value || "当前组合不支持该选项。";
+      return;
+    }
+    const point = order.value.points.find((item) => item.id === pointId);
+    if (!point) return;
+    point[groupId] = optionId;
+    shareNotice.value = "";
+  }
+
+  function updatePoint(pointId: string, patch: Partial<Pick<PointConfiguration, "name" | "area" | "units">>) {
+    const point = order.value.points.find((item) => item.id === pointId);
+    if (!point) return;
+    if (patch.name !== undefined) point.name = patch.name;
+    if (patch.area !== undefined) point.area = Math.max(1, Math.round(Number(patch.area) || 1));
+    if (patch.units !== undefined) point.units = Math.max(1, Math.round(Number(patch.units) || 1));
+  }
+
+  /** 新增点位：整单风量容量不足时拒绝，并列出超限点位 */
+  function addPoint(): boolean {
+    if (isAtCapacity.value) {
+      const names = overCapacityPoints.value.map((point) => point.name).join("、");
+      shareNotice.value = `整单风量容量不足，无法新增点位：${names} 超出覆盖能力，请先调整面积或台数。`;
+      return false;
+    }
+    const point = defaultPoint(order.value.points.length);
+    order.value.points.push(point);
+    activePointId.value = point.id;
+    shareNotice.value = "";
+    return true;
+  }
+
+  function removePoint(pointId: string) {
+    if (order.value.points.length <= 1) return;
+    const index = order.value.points.findIndex((point) => point.id === pointId);
+    if (index < 0) return;
+    order.value.points.splice(index, 1);
+    if (activePointId.value === pointId) {
+      activePointId.value = order.value.points[Math.max(0, index - 1)].id;
+    }
+  }
+
+  function activatePoint(pointId: string) {
+    if (order.value.points.some((point) => point.id === pointId)) {
+      activePointId.value = pointId;
+    }
+  }
+
+  function applyOrderConfiguration(input: Partial<OrderConfiguration>) {
+    order.value = sanitizeOrder(input);
+    activePointId.value = order.value.points[0].id;
+    shareNotice.value = "";
   }
 
   function reset() {
-    configuration.value = { ...defaultConfiguration };
+    order.value = createDefaultOrder();
+    activePointId.value = order.value.points[0].id;
     cameraPreset.value = "hero";
+    shareNotice.value = "";
   }
 
   return {
-    configuration,
+    order,
+    activePointId,
+    activePoint,
     cameraPreset,
     modelRotation,
     shareNotice,
-    options,
-    price,
-    specs,
+    orderOptions,
+    overCapacityPoints,
+    isAtCapacity,
+    activeSpecs,
+    totalPrice,
     dependencyMessage,
-    selectOption,
-    applyConfiguration,
     isOptionDisabled,
+    unitPriceOf,
+    pointPrice,
+    pointCoverage,
+    isPointOverCapacity,
+    pointSpecs,
+    selectOrderOption,
+    selectPointOption,
+    updatePoint,
+    addPoint,
+    removePoint,
+    activatePoint,
+    applyOrderConfiguration,
     reset,
   };
 });
